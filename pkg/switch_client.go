@@ -2,7 +2,7 @@ package xgsapi
 
 import (
 	"bytes"
-	"crypto/rsa"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,37 +17,45 @@ import (
 )
 
 type SwitchClient struct {
-	BaseURL           string
-	Password          string
-	Cookie            string
-	PublicKey         *rsa.PublicKey
-	ModelName         string
-	EncryptedPassword string
-	XSRFToken         string
-	AuthID            string
-	HTTPClient        *http.Client
-	SystemData        *rawdata.SystemData
+	BaseURL    string
+	Password   string
+	Cookie     string
+	ModelName  string
+	XSRFToken  string
+	AuthID     string
+	HTTPClient *http.Client
+	SystemData *rawdata.SystemData
 }
 
 func (s *SwitchClient) Init() {
+	// TODO: specify CA or use system certificates
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 	jar, _ := cookiejar.New(nil)
 	s.HTTPClient = &http.Client{
-		Jar: jar,
+		Jar:       jar,
+		Transport: transport,
 	}
-	url := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.LoginInfoCMD)
+	requestURL := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.LoginInfoCMD)
 
 	var loginInfoDataResp rawdata.LoginInfoResp
-	s.StoreParsedData(url, &loginInfoDataResp)
-	modulus := loginInfoDataResp.Data.Modulus[:len(loginInfoDataResp.Data.Modulus)-1]
-	var err error
-	log.Debug().Msg(modulus)
-	s.PublicKey, err = utils.CreatePublicKey(modulus, utils.HEXExponent)
+	s.StoreParsedData(requestURL, &loginInfoDataResp)
+	parsedURL, err := url.Parse(s.BaseURL)
 	if err != nil {
-		log.Fatal().Msg("can't set public key")
+		log.Fatal().Err(err).Msg("invalid URL")
 	}
-	s.EncryptedPassword, err = utils.EncryptPassword(s.PublicKey, s.Password)
-	if err != nil {
-		log.Fatal().Err(err).Msg("cannot encrypt password")
+	if parsedURL.Scheme == "http" {
+		modulus := loginInfoDataResp.Data.Modulus[:len(loginInfoDataResp.Data.Modulus)-1]
+		log.Debug().Msg(modulus)
+		publicKey, err := utils.CreatePublicKey(modulus, utils.HEXExponent)
+		if err != nil {
+			log.Fatal().Msg("can't set public key")
+		}
+		s.Password, err = utils.EncryptPassword(publicKey, s.Password)
+		if err != nil {
+			log.Fatal().Err(err).Msg("cannot encrypt password")
+		}
 	}
 	s.XSRFToken, err = utils.GenXSRFToken()
 	if err != nil {
@@ -57,13 +65,12 @@ func (s *SwitchClient) Init() {
 
 func (s *SwitchClient) Login() {
 	passwordParams := url.Values{}
-	url := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginAuthCMD)
-	passwordParams.Add("password", s.EncryptedPassword)
-
+	passwordParams.Add("password", s.Password)
+	requestURL := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginAuthCMD)
 	bodyString := fmt.Sprintf(`{"%s&%s&xsrfToken=%s&%s":{}}`, "_ds=1", passwordParams.Encode(), s.XSRFToken, "_de=1")
 	log.Debug().Msg(bodyString)
 	jsonData := []byte(bodyString)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	if err != nil {
 		log.Fatal().Err(err).Msg("error creating request data")
@@ -86,10 +93,10 @@ func (s *SwitchClient) Login() {
 }
 
 func (s *SwitchClient) GetSessionCookie() {
-	url := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginStatusCMD)
+	requestURL := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginStatusCMD)
 	bodyString := fmt.Sprintf(`{"_ds=1&authId=%s&_de=1":{}}`, s.AuthID)
 	jsonData := []byte(bodyString)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Fatal()
 	}
