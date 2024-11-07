@@ -1,1 +1,1 @@
-simple go program to fetch information from Zyxel XGS1210 managed switch
+simple go program to fetch information from Zyxel XGS1210 managed switch.

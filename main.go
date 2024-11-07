@@ -27,4 +27,10 @@ func main() {
 	zyxelSwitch.FetchSystemData()
 	zyxelSwitch.FetchLinkData()
 	zyxelSwitch.FetchVLANData()
+	/*vlan := rawdata.VLAN{
+		PVID:   235,
+		Lplist: "0xfff",
+		Tpbmp:  "0xfff",
+	}*/
+	//zyxelSwitch.AddVLAN(vlan)
 }
