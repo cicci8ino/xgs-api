@@ -7,10 +7,6 @@ type VLANData struct {
 	QVLANs []interface{} `json:"qvlans"`
 }
 
-type VLANDataResp struct {
-	Data VLANData `json:"data"`
-}
-
 type VLAN struct {
 	PVID   int
 	Lplist string

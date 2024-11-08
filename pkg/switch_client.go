@@ -19,12 +19,8 @@ import (
 type SwitchClient struct {
 	BaseURL    string
 	Password   string
-	Cookie     string
-	ModelName  string
 	XSRFToken  string
-	AuthID     string
 	HTTPClient *http.Client
-	SystemData *rawdata.SystemData
 }
 
 func (s *SwitchClient) Init() {
@@ -39,14 +35,14 @@ func (s *SwitchClient) Init() {
 	}
 	requestURL := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.LoginInfoCMD)
 
-	var loginInfoDataResp rawdata.LoginInfoResp
+	var loginInfoDataResp rawdata.LoginInfo
 	s.StoreParsedData(requestURL, &loginInfoDataResp)
 	parsedURL, err := url.Parse(s.BaseURL)
 	if err != nil {
 		log.Fatal().Err(err).Msg("invalid URL")
 	}
 	if parsedURL.Scheme == "http" {
-		modulus := loginInfoDataResp.Data.Modulus[:len(loginInfoDataResp.Data.Modulus)-1]
+		modulus := loginInfoDataResp.Modulus[:len(loginInfoDataResp.Modulus)-1]
 		log.Debug().Msg(modulus)
 		publicKey, err := utils.CreatePublicKey(modulus, utils.HEXExponent)
 		if err != nil {
@@ -67,34 +63,22 @@ func (s *SwitchClient) Login() {
 	passwordParams := url.Values{}
 	passwordParams.Add("password", s.Password)
 	requestURL := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginAuthCMD)
-	bodyString := fmt.Sprintf(`{"%s&%s&xsrfToken=%s&%s":{}}`, "_ds=1", passwordParams.Encode(), s.XSRFToken, "_de=1")
-	log.Debug().Msg(bodyString)
-	jsonData := []byte(bodyString)
-	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
-	req.Header.Set("Content-Type", "application/json")
+	bodyBytes, err := s.Post(requestURL, passwordParams.Encode())
 	if err != nil {
-		log.Fatal().Err(err).Msg("error creating request data")
+		log.Fatal().Err(err).Msg("login post failed")
 	}
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		log.Fatal().Err(err).Msg("posting login request")
-	}
-	bodyResponse, err := io.ReadAll(resp.Body)
-	if err != nil || resp.StatusCode != 200 {
-		log.Fatal().Err(err).Msg("error reading response")
-		return
-	}
+
 	var authResponse rawdata.AuthResponse
-	err = json.Unmarshal(bodyResponse, &authResponse)
+	err = json.Unmarshal(bodyBytes, &authResponse)
 	if err != nil {
-		log.Fatal().Err(err)
+		log.Fatal().Err(err).Msg("problem umarshaling login data")
 	}
-	s.AuthID = authResponse.AuthID
+	s.GetSessionCookie(authResponse.AuthID)
 }
 
-func (s *SwitchClient) GetSessionCookie() {
+func (s *SwitchClient) GetSessionCookie(authID string) {
 	requestURL := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.LoginStatusCMD)
-	bodyString := fmt.Sprintf(`{"_ds=1&authId=%s&_de=1":{}}`, s.AuthID)
+	bodyString := fmt.Sprintf(`{"_ds=1&authId=%s&_de=1":{}}`, authID)
 	jsonData := []byte(bodyString)
 	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -107,7 +91,7 @@ func (s *SwitchClient) GetSessionCookie() {
 	}
 }
 
-func (s *SwitchClient) RawGet(requestURL string) ([]byte, error) {
+func (s *SwitchClient) Get(requestURL string) ([]byte, error) {
 	resp, err := s.HTTPClient.Get(requestURL)
 	if (err) != nil {
 		log.Fatal().Err(err).Msg("error fetching data")
@@ -117,26 +101,33 @@ func (s *SwitchClient) RawGet(requestURL string) ([]byte, error) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("error reading body")
 	}
+	if resp.StatusCode != 200 {
+		log.Error().Msg("get request returned non 200 response code")
+		return nil, fmt.Errorf("resp code %d", resp.StatusCode)
+	}
 	return body, nil
 }
 
-func (s *SwitchClient) RawPost(requestURL string, v any) ([]byte, error) {
-	jsonData, err := json.Marshal(v)
-	if err != nil {
-		log.Fatal().Err(err).Msg("cannot marshal data")
-	}
+func (s *SwitchClient) Post(requestURL string, bodyData string) ([]byte, error) {
+	bodyString := fmt.Sprintf(`{"%s&%s&xsrfToken=%s&%s":{}}`, "_ds=1", bodyData, s.XSRFToken, "_de=1")
+	jsonData := []byte(bodyString)
+	log.Debug().Msg(string(bodyString))
 	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.HTTPClient.Do(req)
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal().Err(err)
+		log.Fatal().Err(err).Interface("bodyData", bodyString).Msg("error posting data")
+	}
+	if resp.StatusCode != 200 {
+		log.Error().Msg("post request returned non 200 response code")
+		return nil, fmt.Errorf("resp code %d", resp.StatusCode)
 	}
 	return bodyBytes, nil
 }
 
 func (s *SwitchClient) StoreParsedData(url string, v any) error {
-	body, _ := s.RawGet(url)
+	body, _ := s.Get(url)
 	var result map[string]interface{}
 	err := json.Unmarshal(body, &result)
 
@@ -145,58 +136,51 @@ func (s *SwitchClient) StoreParsedData(url string, v any) error {
 	}
 	xsrftoken, ok := result["xsrfToken"].(string)
 	if ok {
+		// storing xsrftoken, to be used for subsequent post call
 		s.XSRFToken = xsrftoken
 	}
 	err = json.Unmarshal(body, v)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error parsing data")
 	}
+	data, ok := result["data"].(any)
+	marshaledData, _ := json.Marshal(data)
+	if err != nil {
+		log.Fatal().Err(err).Msg("error marshaling data field")
+	}
+	err = json.Unmarshal(marshaledData, v)
 	log.Debug().Interface("raw_data", v).Msg("raw_data")
 	return nil
 
 }
 
 func (s *SwitchClient) AddVLAN(vlan rawdata.VLAN) {
-	s.FetchVLANData()
 	requestURL := utils.GetURL(s.BaseURL, utils.CGISETPath, utils.VLANAddModCMD)
-	bodyString := fmt.Sprintf(`{"%s&%s&xsrfToken=%s&%s":{}}`, "_ds=1", vlan.String(), s.XSRFToken, "_de=1")
-	jsonData := []byte(bodyString)
-	log.Debug().Msg(string(bodyString))
-	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Fatal().Err(err).Msg("cannot create request")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		log.Fatal().Err(err).Msg("posting login request")
-	}
-	if resp.StatusCode != 200 {
-		log.Warn().Msg("cannot create VLAN")
-	}
-
+	s.Post(requestURL, vlan.String())
 }
 
-func (s *SwitchClient) FetchSystemData() rawdata.SystemDataResp {
+func (s *SwitchClient) FetchSystemData() rawdata.SystemData {
+	// system data is provided by two endpoints
+	// systemdatacmd and sysmgmtdata
+	// might be worth to use two seperate call and two different data structure
 	url := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.SystemDataCMD)
-	var systemDataResp rawdata.SystemDataResp
-	s.StoreParsedData(url, &systemDataResp)
-	s.SystemData = &systemDataResp.Data
+	var systemData rawdata.SystemData
+	s.StoreParsedData(url, &systemData)
 	url = utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.SysMGMTDataCMD)
-	s.StoreParsedData(url, &systemDataResp)
-	return systemDataResp
+	s.StoreParsedData(url, &systemData)
+	return systemData
 }
 
-func (s *SwitchClient) FetchLinkData() rawdata.LinkDataResp {
+func (s *SwitchClient) FetchLinkData() rawdata.LinkData {
 	url := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.LinkDataCMD)
-	var linkDataResp rawdata.LinkDataResp
+	var linkDataResp rawdata.LinkData
 	s.StoreParsedData(url, &linkDataResp)
 	return linkDataResp
 }
 
-func (s *SwitchClient) FetchVLANData() rawdata.VLANDataResp {
+func (s *SwitchClient) FetchVLANData() rawdata.VLANData {
 	url := utils.GetURL(s.BaseURL, utils.CGIGETPath, utils.VLANListCMD)
-	var vlanDataResp rawdata.VLANDataResp
+	var vlanDataResp rawdata.VLANData
 	s.StoreParsedData(url, &vlanDataResp)
 
 	return vlanDataResp

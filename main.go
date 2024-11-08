@@ -23,14 +23,13 @@ func main() {
 	}
 	zyxelSwitch.Init()
 	zyxelSwitch.Login()
-	zyxelSwitch.GetSessionCookie()
 	zyxelSwitch.FetchSystemData()
 	zyxelSwitch.FetchLinkData()
 	zyxelSwitch.FetchVLANData()
 	/*vlan := rawdata.VLAN{
-		PVID:   235,
+		PVID:   245,
 		Lplist: "0xfff",
 		Tpbmp:  "0xfff",
-	}*/
-	//zyxelSwitch.AddVLAN(vlan)
+	}
+	zyxelSwitch.AddVLAN(vlan)*/
 }

@@ -19,7 +19,3 @@ type SystemData struct {
 	SysSessTimeout int    `json:"sys_sess_timeout"`
 	SysMgmtVLAN    int    `json:"sys_mgmt_vlan"`
 }
-
-type SystemDataResp struct {
-	Data SystemData `json:"data"`
-}
